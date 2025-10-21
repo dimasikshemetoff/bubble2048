@@ -3,13 +3,1410 @@
 <head>
 <meta charset="utf-8"/>
 <title>Bubbles 2048</title>
-<script src="script.js"></script>
- <style type="text/css">
+<script>
+// Вспомогательные функции
+function relMouseCoords(event){
+    var totalOffsetX = 0;
+    var totalOffsetY = 0;
+    var canvasX = 0;
+    var canvasY = 0;
+    var currentElement = this;
+
+    do{
+        totalOffsetX += currentElement.offsetLeft;
+        totalOffsetY += currentElement.offsetTop;
+    }
+    while(currentElement = currentElement.offsetParent)
+
+    canvasX = event.pageX - totalOffsetX;
+    canvasY = event.pageY - totalOffsetY;
+
+    return {x:canvasX, y:canvasY}
+}
+
+HTMLCanvasElement.prototype.relMouseCoords = relMouseCoords;
+
+shuffle = function(o){ //v1.0
+    for(var j, x, i = o.length; i; j = parseInt(Math.random() * i), x = o[--i], o[i] = o[j], o[j] = x);
+    return o;
+};
+
+//Returns true if the circles are touching, or false if they are not
+function circlesColliding(x1, y1, radius1, x2, y2, radius2){
+    //compare the distance to combined radii
+    var dx = x2 - x1;
+    var dy = y2 - y1;
+    var radii = radius1 + radius2;
+    if ( ( dx * dx )  + ( dy * dy ) < radii * radii )
+        return true;
+    else
+        return false;
+}
+
+var FPSCounter = (function(){
+    return {
+        current:0,        
+        counter:0,
+        updateTime:1000,
+        elapsed:0,
+        oldtime:0,
+        getFPS:function(){
+            if (this.elapsed > this.updateTime ){
+                this.current = this.counter;
+                this.counter =0;
+                this.elapsed = 0;
+            }
+            return this.current;
+        },
+        
+        frame:function(){
+            var date = new Date();
+            this.newtime = date.getTime();
+            this.counter = this.counter + 1;
+            this.elapsed = this.elapsed + this.newtime - this.oldtime;
+            this.oldtime = this.newtime;
+        }
+    }
+})();
+
+function Grid(rows,cols,bw,bh, world){
+    this.baseY = 0;
+    this.rows = rows;
+    this.cols = cols;
+    this.bw = bw;
+    this.bh = bh;
+    this.cw = bw * 0.5;
+    this.slots = [];
+    this.marked = [];
+    this.world = world;
+    for (var i = 0; i < rows; i++ ){
+        var r = [];
+        for ( var j = 0; j < (cols - (i - Math.floor(i/2)*2)); j++)
+            r.push(null);
+        this.slots.push(r);
+    }
+    this.state = this.states.STILL;
+    this.nextY = 0;
+    this.shakeRot = 0;
+    this.bubblePopUpCallback = null;
+    this.gridLevel  = 0;
+    this.bubbleCount = 0;
+    this.mergingBubbles = [];
+}
+
+Grid.prototype.getBubblesValues = function(f){
+    var values = [];
+    for(var i=0; i<this.slots.length;i++)
+        for (var j=0; j<this.slots[0].length;j++)
+            if (this.slots[i][j])
+                if(values.indexOf(this.slots[i][j].value)<0)
+                    values.push(this.slots[i][j].value);
+    return values;
+}
+
+Grid.prototype.setBubblePopUpCallback = function(f){
+    this.bubblePopUpCallback = f;
+}
+
+Grid.prototype.setBubbleFallCallback = function(f){
+    this.bubbleFallCallback = f;
+}
+
+Grid.prototype.setGridFinishedMoving = function(f){
+    this.finishedMovingDownCallback = f;
+}
+
+Grid.prototype.setBubbleAttachedCallback = function(f){
+    this.bubbleAttachedCallback = f;
+}
+
+Grid.prototype.states = {
+    STILL:0,
+    MOVING_DOWN:1,
+    SHAKING:2,
+};
+
+Grid.prototype.getUpLeftPos = function(i,j){
+    return {i:i-1,j:(this.isRowEven(i))?j-1:j};
+}
+
+Grid.prototype.getUpRightPos = function(i,j){
+    return {i:i-1,j:(this.isRowEven(i))?j:j+1};
+}
+
+Grid.prototype.getCoordForPos = function(i,j){
+    return {x:j*this.bw +(i-Math.floor(i/2)*2)*this.bw/2 ,y:i*this.bw + this.baseY};
+}
+
+Grid.prototype.getCellIndexForCoord = function(x,y){
+    var row = Math.floor((y-this.baseY)/this.bw);
+    var col = Math.floor((x-this.bw/2*(row - 2*Math.floor(row/2)))/this.bw);
+    return (row>=0 && col>=0)?{i:row,j:col}:null;
+}
+
+Grid.prototype.getBubbleAt = function(i,j){
+    return this.slots[i][j];
+}
+
+Grid.prototype.hasBubbleUp = function(i,j){
+    return ((i-1)>=0&&(this.slots[i-1][j]!=null))?true:false;
+}
+
+Grid.prototype.hasBubbleLeft = function(i,j){
+    return ((j-1)>=0&&(this.slots[i][j-1]!=null))?true:false;
+}
+
+Grid.prototype.hasBubbleRight = function(i,j){
+    return ((j+1)<this.cols&&(this.slots[i][j+1]!=null))?true:false;
+}
+
+Grid.prototype.getBubbleLeft=function(i,j){
+    return (this.hasBubbleLeft(i,j))?this.slots[i][j-1]:null;
+}
+
+Grid.prototype.getBubbleRight=function(i,j){
+    return (this.hasBubbleRight(i,j))?this.slots[i][j+1]:null;
+}
+
+Grid.prototype.isRowEven = function(i){
+    return ((i-Math.floor(i/2)*2)==0)?true:false;
+}
+
+Grid.prototype.hasBubbleUpRight=function(i,j){
+    if((i-1)<0 || (i>this.slots.length)) return false;
+    var evenrow = this.isRowEven(i);
+    var jj = (evenrow)?j:j+1;
+    return (jj<(this.slots[i-1].length))?(this.slots[i-1][jj]!=null):false;
+}
+
+Grid.prototype.getBubbleUpRight=function(i,j){
+    if (this.hasBubbleUpRight(i,j))
+        return this.slots[i-1][(this.isRowEven(i))?j:j+1];
+    return null;
+}
+
+Grid.prototype.hasBubbleUpLeft=function(i,j){
+    if((i-1)<0 || (i>this.slots.length)) return false;
+    var evenrow = this.isRowEven(i);
+    var jj = (evenrow)?j-1:j;
+    return (jj>=0 && jj<this.slots[i-1].length)?(this.slots[i-1][jj]!=null):false;
+}
+
+Grid.prototype.getBubbleUpLeft=function(i,j){
+    if (this.hasBubbleUpLeft(i,j))
+        return this.slots[i-1][(this.isRowEven(i))?j-1:j];
+    return null;
+}
+
+Grid.prototype.hasBubbleDownLeft = function(i,j){
+    if((i<0)||(i>this.slots.length)) return false;
+    var evenrow = this.isRowEven(i,j);
+    var jj = (evenrow)?j-1:j;
+    return (jj>=0 && jj<this.slots[i+1].length)?(this.slots[i+1][jj]!=null):false;
+}
+
+Grid.prototype.getBubbleDownLeft = function(i,j){
+    if (this.hasBubbleDownLeft(i,j))
+        return this.slots[i+1][(this.isRowEven(i))?j-1:j];
+    return null;
+}
+
+Grid.prototype.hasBubbleDownRight=function(i,j){
+    if((i<0)||(i>this.slots.length)) return false;
+    var evenrow = this.isRowEven(i,j);
+    var jj = (evenrow)?j:j+1;
+    return (jj<(this.slots[i+1].length))?(this.slots[i+1][jj]!=null):false;
+}
+
+Grid.prototype.getBubbleDownRight=function(i,j){
+    if (this.hasBubbleDownRight(i,j))
+        return this.slots[i+1][(this.isRowEven(i))?j:j+1];
+    return null;
+}
+
+Grid.prototype.addBubble = function(bubble,i,j){
+    if(i<=this.rows && j<= this.cols){
+        if(this.slots[i][j]== null) {
+            this.slots[i][j] = bubble;
+        }
+        else throw {error:"Slot not empty",oldBubble:this.slots[i][j],newBubble:bubble};
+        var wpos = this.getCoordForPos(i,j);
+        bubble.p.x = wpos.x+this.bw/2;
+        bubble.p.y = wpos.y+this.bh/2;
+        bubble.setActive(false);
+        this.bubbleCount++;
+    }
+};
+
+Grid.prototype.removeBubble = function(i,j){
+    this.slots[i][j] = null;
+    this.bubbleCount--;
+
+};
+
+Grid.prototype.getBubbleGridHeight = function(){
+    maxi = 0;
+    for(var i=0; i<this.slots.length;i++)
+        for (var j=0; j<this.slots[0].length;j++)
+            if (this.slots[i][j])
+                if ( i > maxi)
+                    maxi = i;
+    return maxi + 1 + this.gridLevel;
+}
+
+Grid.prototype.getAdjacentBubbles = function(i,j){
+    var bubbles = [];
+    if (this.hasBubbleLeft(i,j)) bubbles.push(this.getBubbleLeft(i,j));
+    if (this.hasBubbleRight(i,j)) bubbles.push(this.getBubbleRight(i,j));
+    if (this.hasBubbleUpRight(i,j)) bubbles.push(this.getBubbleUpRight(i,j));
+    if (this.hasBubbleUpLeft(i,j)) bubbles.push(this.getBubbleUpLeft(i,j));
+    if (this.hasBubbleDownLeft(i,j)) bubbles.push(this.getBubbleDownLeft(i,j));
+    if (this.hasBubbleDownRight(i,j)) bubbles.push(this.getBubbleDownRight(i,j));
+    return bubbles;
+};
+
+Grid.prototype.markBubble2 = function(i,j){
+    this.slots[i][j].setOrphan(false);
+    var adj = this.getAdjacentBubbles(i,j);
+    for(var k=0; k<adj.length;k++)
+        if(adj[k].orphan){
+            var pos = this.getCellIndexForCoord(adj[k].p.x,adj[k].p.y);   
+            this.markBubble2(pos.i,pos.j);
+        }
+};
+
+Grid.prototype.markBubble = function(i,j,value){
+    
+    this.slots[i][j].setMarked(true);
+    this.marked.push({i:i,j:j});
+    var adj = this.getAdjacentBubbles(i,j);
+
+    for(var k=0; k<adj.length;k++)
+        if((adj[k].mark==false) && (adj[k].value == value)){
+            var pos = this.getCellIndexForCoord(adj[k].p.x,adj[k].p.y);   
+            this.markBubble(pos.i,pos.j,value);
+        }
+};
+
+Grid.prototype.mergeMarkedBubbles = function(){
+    if(this.marked.length > 1){
+        var newValue = 0;
+        var targetPos = null;
+        var world = this.world;
+        
+        var bubblesToRemove = [];
+        var highestPos = null; // Track the highest position
+        
+        for(var i = 0; i < this.marked.length; i++){
+            var p = this.marked[i];
+            var b = this.getBubbleAt(p.i, p.j);
+            if(b) {
+                bubblesToRemove.push({
+                    bubble: b,
+                    pos: {i: p.i, j: p.j},
+                    value: b.value
+                });
+                newValue += b.value;
+                
+                // Check if this is the highest position
+                if(!highestPos || p.i < highestPos.i || (p.i === highestPos.i && p.j < highestPos.j)) {
+                    highestPos = {i: p.i, j: p.j};
+                }
+            }
+        }
+        
+        // Use the highest position as the target
+        targetPos = highestPos;
+        
+        // УДАЛЯЕМ ПУЗЫРИ ИЗ СЕТКИ
+        for(var i = 0; i < bubblesToRemove.length; i++){
+            var mb = bubblesToRemove[i];
+            this.removeBubble(mb.pos.i, mb.pos.j);
+        }
+        
+        // Создаем новый пузырек
+        if(newValue >= 512) {
+            var pos = this.getCoordForPos(targetPos.i, targetPos.j);
+            var fallingBubble = new Bubble(pos.x + this.bw/2, pos.y + this.bh/2, this.bw/2);
+            fallingBubble.value = newValue;
+            fallingBubble.fall();
+            if(this.bubbleFallCallback) {
+                this.bubbleFallCallback(fallingBubble, newValue);
+            }
+        } else {
+            var pos = this.getCoordForPos(targetPos.i, targetPos.j);
+            var newBubble = new Bubble(pos.x + this.bw/2, pos.y + this.bh/2, this.bw/2);
+            newBubble.value = newValue;
+            newBubble.setActive(false);
+            
+            this.addBubble(newBubble, targetPos.i, targetPos.j);
+            
+            this.mergingBubbles.push({
+                bubble: newBubble,
+                startTime: Date.now(),
+                duration: 300,
+                startSize: this.bw/4,
+                endSize: this.bw/2
+            });
+        }
+        
+        this.clearMarkedBubbles();
+        
+    } else {
+        this.clearMarkedBubbles();
+    }
+};
+
+Grid.prototype.popAllBubbles = function(){
+    this.mergingBubbles = [];
+    
+    for(var i = 0; i < this.slots.length; i++) {
+        for (var j = 0; j < this.slots[i].length; j++) {
+            if(this.slots[i][j]){
+                var bubble = this.slots[i][j];
+                this.removeBubble(i, j);
+            }
+        }
+    }
+    
+    this.marked.length = 0;
+    this.bubbleCount = 0;
+}
+
+Grid.prototype.clearMarkedBubbles = function(){
+    for(var i = 0; i<this.marked.length;i++){
+        var p = this.marked[i];
+        var b = this.getBubbleAt(p.i,p.j);
+        if(b) b.setMarked(false);
+    }
+    this.marked.length = 0;
+}
+
+Grid.prototype.markAll = function(){
+    for(var i = 0; i<this.slots.length; i++)
+        for (var j = 0; j<this.slots[i].length;j++){
+            if(this.slots[i][j]!=null){
+                this.slots[i][j].setMarked(true);
+                this.marked.push({i:i,j:j});
+            }
+        }
+}
+
+Grid.prototype.isBubbleOrphan = function(i,j){
+    if(i==0) return false;
+    var upright = this.getBubbleUpRight(i,j); 
+    var upleft = this.getBubbleUpLeft(i,j); 
+    var hasupright = this.hasBubbleUpRight(i,j);
+    var hasupleft = this.hasBubbleUpLeft(i,j);
+    var uL = this.getUpLeftPos(i,j);
+    var uR = this.getUpRightPos(i,j);
+    if( hasupright && hasupleft)
+        return (this.isBubbleOrphan(uR.i,uR.j)&&this.isBubbleOrphan(uL.i,uL.j));
+    if(this.hasBubbleUpRight(i,j))
+        return this.isBubbleOrphan(uR.i,uR.j);
+    if(this.hasBubbleUpLeft(i,j))
+        return this.isBubbleOrphan(uL.i,uL.j);
+    return true;
+}
+
+Grid.prototype.detachOrphanBubbles = function(){
+    var world = this.world;
+    var bubblesToRemove = [];
+    
+    for(var i = 0; i < this.slots.length;i++)
+        for(var j = 0; j < this.slots[i].length;j++)
+            if (this.slots[i][j])
+                this.slots[i][j].setOrphan(true);                
+    
+    for (var i = 0; i < this.slots[0].length; i++)
+        if (this.slots[0][i])
+            this.markBubble2(0,i);        
+
+    for(var i = 0; i<this.slots.length; i++)
+        for (var j = 0; j<this.slots[i].length;j++){
+            var b = this.slots[i][j];
+            if(b && this.slots[i][j].orphan){
+                bubblesToRemove.push({
+                    bubble: b,
+                    pos: {i: i, j: j}
+                });
+            }
+        }
+    
+    // УДАЛЯЕМ ОТОРВАННЫЕ ПУЗЫРИ
+    for(var i = 0; i < bubblesToRemove.length; i++){
+        var item = bubblesToRemove[i];
+        this.removeBubble(item.pos.i, item.pos.j);
+        item.bubble.fall();
+        if(this.bubbleFallCallback) {
+            this.bubbleFallCallback(item.bubble);
+        }
+    }
+}
+
+Grid.prototype.shake = function(doShake){
+    this.state = (doShake)?this.states.SHAKING:this.states.STILL;
+}
+
+Grid.prototype.lowerGrid = function(){
+    this.state = this.states.MOVING_DOWN;
+    this.nextY = this.baseY + this.bh;
+    this.gridLevel++
+}
+
+Grid.prototype.step = function(dt){
+    for(var i = this.mergingBubbles.length - 1; i >= 0; i--) {
+        var merge = this.mergingBubbles[i];
+        var elapsed = Date.now() - merge.startTime;
+        
+        if(elapsed >= merge.duration) {
+            merge.bubble.r = merge.endSize;
+            this.mergingBubbles.splice(i, 1);
+        } else {
+            var progress = elapsed / merge.duration;
+            // Use easing function for smoother animation
+            var easeProgress = 1 - Math.pow(1 - progress, 3);
+            var scale = merge.startSize + (merge.endSize - merge.startSize) * easeProgress;
+            merge.bubble.r = scale;
+        }
+    }
+    
+    switch (this.state){
+        case this.states.MOVING_DOWN:
+            var stepSize = this.bh/250;
+            this.baseY += stepSize*dt;
+            for (var i = 0; i<this.slots.length;i++)
+                for (var j = 0; j<this.slots[i].length;j++)
+                    if(this.slots[i][j]!=null)
+                    this.slots[i][j].p.y += stepSize*dt;
+            if (this.baseY >= this.nextY){
+                this.state = this.states.STILL;
+                if(this.finishedMovingDownCallback) {
+                    this.finishedMovingDownCallback();
+                }
+            }
+            break;
+        case this.states.SHAKING:
+            var rotstep = Math.PI*15;
+            this.shakeRot += rotstep*dt/1000;
+            if (this.shakeRot > Math.PI*2)
+                this.shakeRot -= Math.PI*2;
+            break;
+        default:
+    }
+}
+
+function Bubble(x,y,r){
+    this.p = {x:x,y:y};
+    this.v = {x:0,y:0};
+    this.g = {x:0,y:0};
+    this.r = r;
+    this.active = true;
+    this.popped = false;
+    this.mark = false;
+    this.orphan = false;
+    this.merging = false;
+    this.value = Math.pow(2, Math.floor(Math.random() * 5) + 1);
+    this.trail = [];
+    this.maxTrailLength = 8;
+    this.pulseOffset = Math.random() * Math.PI * 2;
+}
+
+Bubble.prototype.step = function(dt){
+    if(this.active){
+        this.v.x = this.v.x + this.g.x*dt;
+        this.v.y = this.v.y + this.g.y*dt;
+        this.p.x = this.v.x*dt + this.p.x;
+        this.p.y = this.v.y*dt + this.p.y;
+        
+        // Add trail particles when moving fast enough
+        if ((Math.abs(this.v.x) > 0.1 || Math.abs(this.v.y) > 0.1) && this.active) {
+            this.trail.push({
+                x: this.p.x,
+                y: this.p.y,
+                life: 1.0,
+                r: this.r * 0.3
+            });
+            
+            // Limit trail length
+            if (this.trail.length > this.maxTrailLength) {
+                this.trail.shift();
+            }
+        }
+        
+        // Update trail
+        for (var i = this.trail.length - 1; i >= 0; i--) {
+            this.trail[i].life -= 0.1;
+            this.trail[i].r *= 0.95;
+            if (this.trail[i].life <= 0) {
+                this.trail.splice(i, 1);
+            }
+        }
+        
+        // Update pulse animation
+        this.pulseOffset += 0.05;
+    }
+}
+
+Bubble.prototype.setP = function(x,y){
+    this.p.x = x;
+    this.p.y = y;
+};
+
+Bubble.prototype.setV = function(x,y){
+    this.v.x = x;
+    this.v.y = y;
+};
+
+Bubble.prototype.incVx = function(inc){
+    this.v.x += inc;
+};
+
+Bubble.prototype.incVy = function(inc){
+    this.v.y += inc;
+};
+
+Bubble.prototype.setR = function(radius){
+    this.r = radius;
+}
+
+Bubble.prototype.setActive = function(active){
+    this.active = active;
+}
+
+Bubble.prototype.setOrphan = function(orphan){
+    this.orphan = orphan;
+}
+
+Bubble.prototype.setMarked = function(marked){
+    this.mark = marked;
+}
+
+Bubble.prototype.isPopped = function(){
+    return this.popped;
+}
+
+Bubble.prototype.stop = function(){
+    this.p.y = this.p.x = 0;
+}
+
+Bubble.prototype.pop = function(){
+    this.g = {x:0,y:0.001};
+    this.v.y = -0.2-Math.random()*0.1;
+    this.v.x = Math.random()*0.2-0.1;
+    this.setActive(true);
+    this.popped = true;
+}
+
+Bubble.prototype.fall = function(){
+    this.g = {x:0,y:(0.0005)};
+    this.v.x=0; this.v.y=0.02*this.p.y/this.r;
+    this.setActive(true);
+    this.popped = true;
+}
+
+function TextSprite(x,y,vx,vy,text) {
+    this.time = 0;
+    this.x = x;
+    this.y = y;
+    this.vx = vx;
+    this.vy = vy;
+    this.text = text;
+    this.active = true;
+}
+
+TextSprite.prototype.delay = 1000;
+
+TextSprite.prototype.step = function(dt){
+    if(this.active){
+        this.time += dt;
+        this.x += this.vx*dt;
+        this.y += this.vy*dt;
+        if (this.time > this.delay)
+            this.active = false;
+    }
+}
+
+function PointsTextManager(){
+    this.texts = [];
+    this.addTextSprite = function(sprite){
+        this.texts.push(sprite);
+    };
+    this.clearInactive = function(){
+        this.texts = this.texts.filter(function(v){return (v.active)});    
+    };
+    this.step = function(dt){
+        if(this.texts.length>0){
+            for(var i = 0; i< this.texts.length;i++)
+                this.texts[i].step(dt);
+            this.clearInactive();
+        }
+    };
+}
+
+function Alarm(dt,callback){
+    this.dt = dt;
+    this.elapsed = 0;
+    this.running = false;
+    this.callback = callback;
+}
+
+Alarm.prototype.start = function(){
+    this.running = true;
+};
+
+Alarm.prototype.step = function(dt){
+    if(this.running){
+        this.elapsed+=dt;
+        if(this.elapsed >= this.dt) { 
+            this.callback();
+            this.pause();
+        }
+    }
+}
+
+Alarm.prototype.pause = function(){
+    if (this.running) this.running = false;
+}
+
+Alarm.prototype.resume = function(){
+    this.running = true;
+}
+
+Alarm.prototype.reset = function(){
+    this.running = false;
+    this.elapsed = 0;
+}
+
+Alarm.prototype.getRemaining = function(){
+    return  (this.dt-this.elapsed)<=0?0:this.dt-this.elapsed;
+}
+
+var Renderer = (function(){
+    var drawBoard = function(dc,x,y,w,h){
+        dc.fillStyle = "rgb(20,20,250);"        
+        dc.fillRect(0,0,w,h);
+    }
+
+    var bubbleColors = {
+        2: "#87CEEB",
+        4: "#98FB98",
+        8: "#FFB6C1",
+        16: "#FFD700",
+        32: "#FFA07A",
+        64: "#9370DB",
+        128: "#20B2AA",
+        256: "#FF6347",
+        512: "#8A2BE2"
+    };
+    
+    var textColors = {
+        2: "#000000",
+        4: "#000000",
+        8: "#000000",
+        16: "#000000",
+        32: "#000000",
+        64: "#FFFFFF",
+        128: "#FFFFFF",
+        256: "#FFFFFF",
+        512: "#FFFFFF"
+    };
+    
+    var bw = 50;
+    var bh = 50;
+    var bubblesRenders = {}; 
+    
+    var drawBubble = function(bubble,dc,debug){
+        // Draw bubble with gradient and highlight for realistic effect
+        var gradient = dc.createRadialGradient(
+            -bubble.r * 0.3, -bubble.r * 0.3, 0,
+            0, 0, bubble.r
+        );
+        gradient.addColorStop(0, "rgba(255, 255, 255, 0.8)");
+        gradient.addColorStop(0.7, bubbleColors[bubble.value] || "#87CEEB");
+        gradient.addColorStop(1, "rgba(0, 0, 0, 0.1)");
+        
+        // Draw trail particles
+        for (var i = 0; i < bubble.trail.length; i++) {
+            var trail = bubble.trail[i];
+            var trailGradient = dc.createRadialGradient(0, 0, 0, 0, 0, trail.r);
+            trailGradient.addColorStop(0, "rgba(255, 255, 255, " + trail.life * 0.5 + ")");
+            trailGradient.addColorStop(1, "rgba(135, 206, 235, " + trail.life * 0.3 + ")");
+            
+            dc.save();
+            dc.translate(trail.x - bubble.p.x, trail.y - bubble.p.y);
+            dc.beginPath();
+            dc.fillStyle = trailGradient;
+            dc.arc(0, 0, trail.r, 0, Math.PI * 2);
+            dc.fill();
+            dc.restore();
+        }
+        
+        // Main bubble with pulse effect
+        var pulse = Math.sin(bubble.pulseOffset) * 0.05 + 1;
+        dc.save();
+        dc.scale(pulse, pulse);
+        
+        dc.beginPath();
+        dc.fillStyle = gradient;
+        dc.arc(0, 0, bubble.r * 0.95, 0, Math.PI * 2);
+        dc.fill();
+        
+        // Bubble highlight
+        var highlight = dc.createRadialGradient(
+            -bubble.r * 0.2, -bubble.r * 0.2, 0,
+            -bubble.r * 0.2, -bubble.r * 0.2, bubble.r * 0.6
+        );
+        highlight.addColorStop(0, "rgba(255, 255, 255, 0.8)");
+        highlight.addColorStop(1, "rgba(255, 255, 255, 0)");
+        
+        dc.beginPath();
+        dc.fillStyle = highlight;
+        dc.arc(-bubble.r * 0.15, -bubble.r * 0.15, bubble.r * 0.4, 0, Math.PI * 2);
+        dc.fill();
+        
+        dc.restore();
+        
+        // Bubble border
+        dc.beginPath();
+        dc.strokeStyle = "rgba(255, 255, 255, 0.6)";
+        dc.lineWidth = 2;
+        dc.arc(0, 0, bubble.r * 0.95, 0, Math.PI * 2);
+        dc.stroke();
+        
+        // Value text with glow effect
+        dc.save();
+        dc.shadowColor = "rgba(0, 0, 0, 0.5)";
+        dc.shadowBlur = 4;
+        dc.fillStyle = textColors[bubble.value] || "#FFFFFF";
+        dc.font = "bold " + Math.max(12, bubble.r * 0.4) + "px Arial";
+        dc.textAlign = "center";
+        dc.textBaseline = "middle";
+        dc.fillText(bubble.value, 0, 0);
+        dc.restore();
+    };
+
+    modelBubble = new Bubble(0,0,bw/2);
+    
+    for (var value in bubbleColors) {
+        var c = document.createElement('canvas');
+        c.width = bw;
+        c.height = bh;
+        dc = c.getContext("2d");
+        modelBubble.value = parseInt(value);
+        dc.save();
+        dc.translate(modelBubble.r,modelBubble.r);
+        drawBubble(modelBubble,dc);
+        dc.restore();
+        bubblesRenders[value] = c;
+    }
+    
+    return {
+        setTextFont:function(font,color){
+            dc.font = font;
+            dc.fillStyle = color;             
+        },
+        
+        drawText:function(text,x,y){
+            dc.fillText(text,x,y);
+        },
+
+        drawBubbleXY:function(bubble,dc,x,y){
+            dc.save();
+            dc.translate(x,y);
+            drawBubble(bubble,dc);
+            dc.restore();
+        },
+        
+        drawBoard:function(dc,x,y,w,h){
+            // Create gradient background
+            var gradient = dc.createLinearGradient(0, 0, 0, h);
+            gradient.addColorStop(0, "#87CEEB");
+            gradient.addColorStop(1, "#1E90FF");
+            
+            dc.fillStyle = gradient;
+            dc.fillRect(0,0,w,h);
+            dc.strokeStyle = "rgb(0,0,0)";
+            dc.strokeRect(0,0,w,h);
+        },
+        
+        drawTrajectory:function(world,dc,targetX,targetY){
+            var startX = world.w/2;
+            var startY = world.h-world.bh/2;
+            
+            dc.save();
+            dc.strokeStyle = "rgba(255, 255, 255, 0.7)";
+            dc.lineWidth = 2;
+            dc.setLineDash([5, 5]);
+            dc.beginPath();
+            dc.moveTo(startX, startY);
+            
+            var dir = {x:targetX-startX,y:targetY-startY};
+            var norma = Math.sqrt(dir.x*dir.x+dir.y*dir.y);
+            dir.x = dir.x/norma;
+            dir.y = dir.y/norma;
+            
+            var steps = 20;
+            var stepLength = 30;
+            var currentX = startX;
+            var currentY = startY;
+            var currentDirX = dir.x;
+            var currentDirY = dir.y;
+            
+            for(var i = 1; i <= steps; i++) {
+                var nextX = currentX + currentDirX * stepLength;
+                var nextY = currentY + currentDirY * stepLength;
+                
+                // Check for wall collision
+                if(nextX < world.bw/2 || nextX > world.w - world.bw/2) {
+                    // Calculate bounce angle
+                    currentDirX = -currentDirX;
+                    nextX = currentX + currentDirX * stepLength;
+                    
+                    // Draw bounce indicator
+                    dc.save();
+                    dc.strokeStyle = "rgba(255, 255, 0, 0.8)";
+                    dc.lineWidth = 3;
+                    dc.beginPath();
+                    dc.arc(nextX, nextY, 5, 0, Math.PI * 2);
+                    dc.stroke();
+                    dc.restore();
+                }
+                
+                if(nextY < 0) {
+                    break;
+                }
+                
+                dc.lineTo(nextX, nextY);
+                currentX = nextX;
+                currentY = nextY;
+            }
+            
+            dc.stroke();
+            dc.restore();
+        },
+        
+        drawWorld:function(game,dc,dc2){
+            var world = game.world;
+
+            Renderer.drawBoard(dc,world.x,world.y,world.w,world.h);
+            
+            if (this.debug) {
+                dc.strokeStyle = "#555555";
+                for(var i=0; i<world.bubblegrid.slots.length;i++)
+                    for(var j=0; j<world.bubblegrid.slots[i].length;j++){
+                        var pos = world.bubblegrid.getCoordForPos(i,j);
+                        dc.strokeRect(pos.x,pos.y,world.bw,world.bh);                                
+                    }
+            }
+            
+            // РИСУЕМ ТОЛЬКО СУЩЕСТВУЮЩИЕ ПУЗЫРИ В СЕТКЕ
+            var dx = (world.bubblegrid.state == Grid.prototype.states.SHAKING)?Math.sin(world.bubblegrid.shakeRot)*world.bw/6:0;
+            dc.save();
+            dc.translate(dx,0);
+            for (var i=0; i< world.bubblegrid.slots.length; i++) {
+                for (var j=0; j<world.bubblegrid.slots[i].length;j++) {
+                    if (world.bubblegrid.slots[i][j] != null){
+                        var b = world.bubblegrid.slots[i][j];
+                        Renderer.drawBubbleXY(b,dc,b.p.x,b.p.y);
+                    }
+                }
+            }
+            dc.restore();
+            
+            // Рисуем анимацию слияния
+            for(var i = 0; i < world.bubblegrid.mergingBubbles.length; i++) {
+                var merge = world.bubblegrid.mergingBubbles[i];
+                var b = merge.bubble;
+                Renderer.drawBubbleXY(b, dc, b.p.x, b.p.y);
+            }
+            
+            // Рисуем свободные пузырьки
+            for (var i=0; i< world.bubbles.length;i++){
+                var b = world.bubbles[i];
+                if(b && b.p && !isNaN(b.p.x) && !isNaN(b.p.y)) {
+                    Renderer.drawBubbleXY(b,dc,b.p.x,b.p.y);
+                }
+            }
+            
+            // Рисуем выстреленный пузырек
+            var b = world.firedBubbles[0];
+            if (b) Renderer.drawBubbleXY(b,dc,b.p.x,b.p.y);
+            
+            // Рисуем следующий пузырек для выстрела
+            var b = world.nextBubble;                
+            Renderer.drawBubbleXY(b,dc,b.p.x,b.p.y);
+            
+            Renderer.setTextFont("12px sans-serif","rgb(255,255,255)");
+
+            if (this.debug){ 
+                Renderer.drawText("Firing: " + (world.firedBubbles.length>0),10,350);
+                Renderer.drawText("FPS: " + FPSCounter.getFPS(),10,360);
+            }
+            Renderer.drawText("Score: " + world.points,10,396);
+            
+            Renderer.setTextFont("15px italic arial,sans-serif strong","rgb(255,255,255)");
+            for (var i = 0; i< world.pointTexts.texts.length;i++)
+                Renderer.drawText(world.pointTexts.texts[i].text,world.pointTexts.texts[i].x,world.pointTexts.texts[i].y);
+
+            dc2.clearRect(0,0,world.w,world.h);
+            if (game.state != Game.states.RUNNING){
+                dc2.fillStyle = "rgba(0,0,0,0.5)";
+                dc2.fillRect(0,0,world.w,world.h);
+            }
+        }
+    }
+})();
+
+function World(w,h){
+    this.w=w;
+    this.h=h;
+    this.g=-1;
+    this.quantum = 1000/90;
+    this.bubblegrid = new Grid(Math.floor(this.h/this.bw),Math.floor(this.w/this.bw),this.bw,this.bh, this);
+    this.bubbles = [];
+    this.deadBubbles = [];
+    this.firedBubbles = [];
+    this.shots=0;
+    this.shotLimit=6;
+    this.points = 0;
+    this.pointTexts = new PointsTextManager();
+    this.trajectoryTarget = null;
+    var world = this;
+    this.bubblegrid.setBubblePopUpCallback(function(b, value){
+        world.bubbles.push(b);
+        world.pointTexts.addTextSprite(new TextSprite(b.p.x,b.p.y,0.02,-0.04,"+" + value));
+        world.points += value;
+    });
+    this.bubblegrid.setBubbleFallCallback(function(b, value){
+        world.bubbles.push(b);
+        if(value) {
+            world.pointTexts.addTextSprite(new TextSprite(b.p.x,b.p.y,0.02,-0.04,"+" + (value * 2)));
+            world.points += value * 2;
+        }
+    });
+    this.bubblegrid.setGridFinishedMoving(function(){
+        var lowest = world.bubblegrid.getBubbleGridHeight();
+        world.testGameOver();
+    });
+    this.bubblegrid.setBubbleAttachedCallback(function(){
+        world.testGameOver();
+    });
+}
+
+World.prototype.testGameOver = function(){
+    var maxGridLevel = this.h / this.bh;
+    var currentGridLevel = this.bubblegrid.getBubbleGridHeight();
+    if (currentGridLevel >= maxGridLevel){
+        this.gameOverCallback("lose"); 
+        return;
+    } 
+    if (this.bubblegrid.bubbleCount <= 0){
+        this.gameOverCallback("win");
+    }
+}
+
+World.prototype.bw = 50;
+World.prototype.bh = 50;
+
+World.states = {
+    GAME_OVER:0,
+    PAUSED:1,
+    STARTING:2,
+    RUNNING:3,
+};
+
+World.prototype.pause = function(){
+    switch(this.state) {
+        case World.states.RUNNING:
+            this.state = World.states.PAUSED;
+            break;
+        case World.states.PAUSED:
+            this.state = World.states.RUNNING;
+            break;    
+    }
+}
+
+World.prototype.setGameOverCallback = function(f){
+    this.gameOverCallback = f;
+}
+
+World.prototype.end = function(){
+    this.bubblegrid.popAllBubbles();
+}
+
+World.prototype.createNextBubble = function(){
+    var b = new Bubble(this.w/2,this.h-this.bw/2,this.bw/2);
+    var values = this.bubblegrid.getBubblesValues();
+    var index = Math.floor(Math.random()*values.length);
+    if(values.length>0)
+        b.value = values[index];
+    return b;
+}
+
+World.prototype.getNextBubble = function(){
+    var b = this.nextBubble;
+    this.nextBubble = this.createNextBubble();
+    return b;
+}
+
+World.prototype.setup = function(){
+    var bubblesRows = 5;
+    var bubblesCols = Math.floor(this.w/this.bw);
+    for (var j = 0; j<bubblesRows; j++)
+        for (var i = 0; i<bubblesCols-(j - Math.floor(j/2)*2); i++){
+            var b = new Bubble( this.bw/2*(j - Math.floor(j/2)*2) + i*this.bw+this.bw/2,j*this.bh+this.bh/2,this.bw/2);
+            b.setActive(false);
+            b.v.y = i*0.01;
+            b.g = {x:0,y:0.0001};
+            this.bubblegrid.addBubble(b,j,i);
+        }
+    this.nextBubble = this.createNextBubble();
+    this.quantum = 1000/180;
+    this.state = World.states.RUNNING;
+}
+
+World.prototype.addBubble = function(b){
+    this.bubbles.push(b);
+}
+
+World.prototype.step = function(dt){
+    frameTime = this.quantum;
+    
+    if (this.state == World.states.RUNNING) {
+        for(var t=0;t<=dt;t=t+frameTime){
+            this.stepFiredBubbles(frameTime);
+            this.testCollision();                
+        }
+           
+        this.bubblegrid.step(dt);
+        this.stepFreeBubbles(dt);
+        this.pointTexts.step(dt);
+    }
+}
+
+World.prototype.stepFiredBubbles = function(dt){
+    if(this.firedBubbles.length >0){
+        var b = this.firedBubbles[0];
+        b.step(dt);
+        if((b.p.x + b.v.x) <= this.bw/2 || (b.p.x + b.v.x) >= (this.w-this.bw/2))
+            b.v.x *=-1;               
+    }
+}
+
+World.prototype.stepFreeBubbles = function(dt){
+    for(var i = 0; i<this.bubbles.length; i++){
+        var b = this.bubbles[i];
+        if(b) {
+            b.step(dt);
+            if((b.p.x + b.v.x) <= this.bw/2 || (b.p.x + b.v.x) >= (this.w-this.bw/2))
+                b.v.x *=-1;
+            if(b.p.y > this.h)
+                this.deadBubbles.push(i);
+        }
+    }    
+    if(this.deadBubbles.length>0){
+        for (var j = 0; j< this.deadBubbles.length;j++)
+            this.bubbles[this.deadBubbles[j]] = null;
+        this.bubbles = this.bubbles.filter(function(v){return (v!=null)});        
+        this.deadBubbles.length = 0; 
+    }
+}
+
+World.prototype.testCollision = function(){
+    for(var i = 0; i<this.firedBubbles.length;i++){
+         var b = this.firedBubbles[i];
+       
+         var collides = false;
+         
+         for (var i = 0; i < this.bubblegrid.slots.length; i++)
+           for (var j = 0; j < this.bubblegrid.slots[0].length; j++){
+               var b2 = this.bubblegrid.slots[i][j];
+               if(b2 && circlesColliding(b.p.x,b.p.y,b.r,b2.p.x,b2.p.y,b2.r)){
+                   collides = true;
+                   break;
+               }
+           }
+         
+         if(collides||(b.p.y<this.bh+this.bubblegrid.baseY)){
+               var pos = this.bubblegrid.getCellIndexForCoord(b.p.x,b.p.y);
+               if (pos == null) pos = this.bubblegrid.getCellIndexForCoord(b.p.x+b.r,b.p.y);
+               if (pos.j >= this.bubblegrid.slots[pos.i].length)  pos.j = pos.j-1;
+              
+               this.bubblegrid.addBubble(b,pos.i,pos.j);
+               this.bubblegrid.markBubble(pos.i,pos.j,b.value);
+               this.bubblegrid.mergeMarkedBubbles();
+               this.bubblegrid.clearMarkedBubbles();
+               this.bubblegrid.detachOrphanBubbles();
+               this.firedBubbles.pop();
+               this.moveGrid();
+               this.bubblegrid.bubbleAttachedCallback(); 
+         }
+    }
+}
+
+World.prototype.fireBubble = function(target){
+    if(this.firedBubbles.length==0){
+        this.shots++;
+        var dir = {x:target.x-this.w/2,y:target.y-this.h+1};
+        var b = this.getNextBubble();
+        var norma = Math.sqrt(dir.x*dir.x+dir.y*dir.y);
+        b.v.x = dir.x/norma *0.9;
+        b.v.y = dir.y/norma * 0.9;
+        this.firedBubbles.push(b);
+    }
+}
+
+World.prototype.moveGrid = function(){
+    switch (this.shots){
+        case this.shotLimit:
+            this.bubblegrid.lowerGrid();
+            this.shots = 0;
+            break;
+    }
+}
+
+function Game(width, height, platform){
+    this.platform = platform;
+    this.world_width = width;
+    this.world_height = height;
+    this.state = Game.states.RUNNING;
+    this.rederer = Renderer;
+    this.debug = true;
+    this.restart();
+}
+
+Game.states = {
+    OVER:0,
+    PAUSED:1,
+    RUNNING:2,
+};
+
+Game.prototype.processInput = function(input) {
+    var g = this;
+    if (input.keysDown){
+        input.keysDown.forEach( function(key){
+            switch (key) {
+                case 13:
+                    g.pause();                
+                case 82:
+                case 38:
+                       break;
+                case 40:
+                    break;
+                case 37:
+                    break;
+                case 39:
+                    break;
+                case 68:
+                    g.debug = !g.debug;
+                    Renderer.debug = g.debug;
+            }
+       });
+    }
+
+    if (input.mouseclick){
+        if (this.state == Game.states.RUNNING){
+            var wpos = {x:input.mousepos.x,y:input.mousepos.y};
+            this.world.fireBubble(wpos);
+        }
+    }
+    
+    if (input.mousemove && this.state == Game.states.RUNNING && this.world.firedBubbles.length == 0) {
+        this.world.trajectoryTarget = {x:input.mousepos.x, y:input.mousepos.y};
+    } else if (!input.mousemove) {
+        this.world.trajectoryTarget = null;
+    }
+}
+
+Game.prototype.pause = function() {
+    switch(this.state) {
+        case Game.states.RUNNING:
+            this.state = Game.states.PAUSED;
+            this.platform.pause_resume();
+            break;
+        case Game.states.PAUSED:
+            this.state = Game.states.RUNNING;
+            this.platform.pause_resume();
+            break;
+            break;    
+    }
+}
+
+Game.prototype.end = function(evt){
+    this.world.end();
+    this.state = Game.states.GAME_OVER;
+    this.platform.endGame(evt);
+}
+
+Game.prototype.restart = function() {
+    this.world = new World(this.world_width,this.world_height);
+    this.world.setup();
+
+    var game = this;
+    var endGameCallback = function (evt){
+        if (game.state == Game.states.RUNNING){
+            game.end(evt);
+        }
+    };
+
+    this.world.setGameOverCallback(endGameCallback);
+
+    this.state = Game.states.RUNNING;
+}
+
+Game.prototype.step = function(dt) {
+    if (this.state != Game.states.PAUSED){
+        this.world.step(dt);
+    }
+}
+
+Game.prototype.render = function(dc1,dc2) {
+    Renderer.drawWorld(this,dc,dc2);
+    
+    if (this.world.trajectoryTarget) {
+        Renderer.drawTrajectory(this.world, dc, this.world.trajectoryTarget.x, this.world.trajectoryTarget.y);
+    }
+}
+
+var init = function(){
+    window.requestAnimationFrame = (function (){
+        return  window.requestAnimationFrame       ||
+                window.webkitRequestAnimationFrame ||
+                window.mozRequestAnimationFrame    ||
+                window.oRequestAnimationFrame      ||
+                window.msRequestAnimationFrame     ||
+                function(callback){
+                    window.setTimeout(callback,1000/60);
+                }
+    })();
+
+    var c = document.getElementById("c");
+    dc = c.getContext("2d");
+    
+    var c2 = document.getElementById("c2");        
+    dc2 = c2.getContext("2d");
+
+    
+    var game_input = { 
+        keysDown:[], 
+        mouseClick:false,
+        mousePos:null,
+        mouseMove:false
+    };
+
+    var platform = {
+        pause_resume: function(){
+            var menu= document.getElementById("menu-pause");
+            if (menu.style.display == "block"){
+                menu.style.display = "none"; 
+            } else {
+                menu.style.display = "block"; 
+            }
+        },
+        getMenuItemRestart:function(){
+            return document.getElementById("action_restart");
+        },
+        getMenuItemResume:function(){
+            return document.getElementById("action_resume");
+        },
+        getMenuItemPlayAgain:function(){
+            return document.getElementById("action_replay");
+        },
+        positionMenu: function(menuId){
+            var menu = document.getElementById(menuId);
+            
+            var wm = (c.width/2 - menu.offsetWidth/2);
+            var hm = (c.height/2 - menu.offsetHeight/2);
+            menu.style.top = hm + "px";
+            menu.style.left = wm + "px";
+            menu.style.display = "none";
+        },
+        endGame: function(evt){
+            var gameMessage =  document.getElementById("txt-win-lose");
+            var scoreDisplay = document.getElementById("txt-score");
+            
+            if (evt == "win"){
+                gameMessage.innerHTML = "You Win!";
+            } else {
+                gameMessage.innerHTML = "Game Over!";
+            }
+            
+            // Display the score
+            scoreDisplay.innerHTML = "Score: " + game.world.points;
+            scoreDisplay.style.display = "block";
+            
+            var gameOverMenu = document.getElementById("menu-game-over");
+            gameOverMenu.style.display = "block";
+        }
+    };
+
+    var game = new Game(c.width, c.height, platform);
+     
+    platform.getMenuItemResume().onclick = function(){
+        game.pause();   
+    };
+    
+    platform.getMenuItemRestart().onclick = function(){
+        document.getElementById("menu-pause").style.display = "none";
+        game.restart();   
+    };
+    platform.getMenuItemPlayAgain().onclick = function(){
+        document.getElementById("menu-game-over").style.display = "none";
+        game.restart();
+    }
+   
+    c2.addEventListener('click', function(evt){
+        game_input.mousepos = c.relMouseCoords(evt);
+        game_input.mouseclick = true;
+    }, false);
+    
+    c2.addEventListener('mousemove', function(evt){
+        game_input.mousepos = c.relMouseCoords(evt);
+        game_input.mousemove = true;
+    }, false);
+    
+    c2.addEventListener('mouseleave', function(evt){
+        game_input.mousemove = false;
+    }, false);
+
+    function KeyDown(evt) {
+        game_input.keysDown.push(evt.keyCode);
+    }
+
+    window.addEventListener('keydown', KeyDown, true);
+    platform.positionMenu("menu-pause");
+    platform.positionMenu("menu-game-over");
+
+        
+    function gameLoop(oldtime){
+        var now = (new Date()).getTime();
+        var dt = now - oldtime ;        
+        
+        if( game_input.mouseclick || (game_input.keysDown.length > 0) || game_input.mousemove){
+            game.processInput(game_input);
+            game_input.mouseclick = false;
+            game_input.keysDown = [];
+            game_input.mousemove = false;
+        }
+
+        game.step(dt);
+        game.render(dc,dc2);
+        FPSCounter.frame();
+        requestAnimationFrame(function(){gameLoop(now)},c);
+    }
+
+    gameLoop((new Date()).getTime());
+}
+
+window.onload = init;
+</script>
+<style type="text/css">
     #container {
         position:relative;
         margin-left:auto;
         margin-right:auto;
-        width:300px;
+        width:100%;
     }
 
     canvas {
@@ -72,15 +1469,12 @@
     #menu-game-over h1,h2 {
         text-align:center;
     }
-
-    
- </style>
+</style>
 </head>
 <body>
-<h1 style="text-align:center;">Bubbles 2048</h1>
 <div id="container">
-    <canvas id="c" width="300" height="400" ></canvas>
-    <canvas id="c2" width="300" height="400"></canvas>
+    <canvas id="c" width="500" height="900" ></canvas>
+    <canvas id="c2" width="500" height="900"></canvas>
     <div id="menu-pause">
         <ul class="menu-items">
             <li id="action_restart">Restart</li>
@@ -90,7 +1484,7 @@
     </div>
     <div id="menu-game-over" >
         <h1 id="txt-win-lose"> Game Over! </h1>
-        <h2 style="display:none" id="txt-score"> Score: xx </h2>
+        <h2 id="txt-score"> Score: xx </h2>
         <ul class="menu-items">
             <li id="action_replay">Play Again</li>
         </ul>
